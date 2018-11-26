@@ -139,7 +139,7 @@ void server(uint16_t port) {
 std::atomic<size_t> sent_client{0};
 void client(const char *ip, const char *port) {
   udp::resolver resolver(io_service);
-  udp::resolver::query query(udp::v6(), ip, port);
+  udp::resolver::query query(ip, port);
   udp::endpoint remote_endpoint = *resolver.resolve(query);
 
   udp::socket socket(io_service);
