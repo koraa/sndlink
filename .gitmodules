@@ -1,0 +1,6 @@
+[submodule "vendor/libsoundio"]
+	path = vendor/libsoundio
+	url = https://github.com/andrewrk/libsoundio
+[submodule "vendor/speexdsp"]
+	path = vendor/speexdsp
+	url = https://github.com/xiph/speexdsp
