@@ -33,7 +33,8 @@ constexpr size_t frame_bytes = frame_mono_samples * sizeof(uint16_t);
 template<typename... Args>
 void check(bool ck, Args&&... args) {
   if (ck) return;
-  (std::cerr << "[FATAL] " << ... << args) << std::endl;
+  std::cerr << "[FATAL] ";
+  (std::cerr << ... << args) << std::endl;
   ::abort();
 }
 

@@ -4,3 +4,6 @@
 [submodule "vendor/speexdsp"]
 	path = vendor/speexdsp
 	url = https://github.com/xiph/speexdsp
+[submodule "vendor/portaudio_opensles"]
+	path = vendor/portaudio_opensles
+	url = https://github.com/Gundersanne/portaudio_opensles

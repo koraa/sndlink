@@ -1,13 +1,21 @@
+SHELL := /bin/bash
 deps = $(PWD)/deps/
 
 CXXFLAGS+=-g -O0 --std=c++17 -Wall -Wextra -Wpedantic
 CPPFLAGS+=-I"$(PWD)/deps/include"
 LDFLAGS+=-L"$(PWD)/deps/lib64" -L"$(PWD)/deps/lib"
 
-sndlink: ./sndlink.cpp Makefile $(libspeexdsp)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $< -o $@ \
-		$(libspeexdsp) \
-		-lportaudio -lboost_system -lpthread
+# Detect android
+ifneq ($(strip $(shell uname -a | grep Android)),)
+	libportaudio=$(libportaudio_android) -lOpenSLES -l7z
+	libportaudio_dep=$(libportaudio_android)
+else
+	libportaudio=-lportaudio
+	libportaudio_dep=
+endif
+
+.PHONY: all clean clean-deps clean-all
+all: sndlink
 
 libspeexdsp=deps/lib/libspeexdsp.a
 $(libspeexdsp):
@@ -19,7 +27,20 @@ $(libspeexdsp):
 		&& ./configure --prefix="$(deps)" \
 		&& $(MAKE) install
 
-PHONY: clean clean-deps clean-all
+libportaudio_android=deps/lib/libportaudio.a
+$(libportaudio_android):
+	mkdir -p deps/{build,lib,lib32,lib64,include,bin,sbin}
+	rm -Rf deps/build/portaudio_opensles/
+	cp -R vendor/portaudio_opensles deps/build/portaudio_opensles
+	cd deps/build/portaudio_opensles \
+		&& patch configure.in ../../../portaudio_opensles_config.in.diff \
+		&& autoconf \
+		&& ./configure --prefix="$(deps)" --with-opensles \
+		&& $(MAKE) install
+
+sndlink: ./sndlink.cpp Makefile $(libspeexdsp) $(libportaudio_dep)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $< -o $@ \
+		$(libspeexdsp) $(libportaudio) -lboost_system -lpthread
 
 clean:
 	rm sndlink -fv
