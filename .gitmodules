@@ -7,3 +7,6 @@
 [submodule "vendor/portaudio_opensles"]
 	path = vendor/portaudio_opensles
 	url = https://github.com/Gundersanne/portaudio_opensles
+[submodule "vendor/opus"]
+	path = vendor/opus
+	url = https://github.com/xiph/opus

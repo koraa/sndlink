@@ -44,9 +44,20 @@ $(libportaudio_android):
 		&& ./configure --prefix="$(deps)" --with-opensles \
 		&& $(MAKE) install
 
-sndlink: ./sndlink.cpp Makefile $(libspeexdsp) $(libportaudio_dep)
+libopus=deps/lib/libopus.a
+$(libopus):
+$(libopus):
+	mkdir -p deps/{build,lib,lib32,lib64,include,bin,sbin}
+	rm -Rf deps/build/opus/
+	cp -R vendor/opus deps/build/opus
+	cd deps/build/opus \
+		&& ./autogen.sh \
+		&& ./configure --prefix="$(deps)" \
+		&& $(MAKE) install
+
+sndlink: ./sndlink.cpp Makefile $(libspeexdsp) $(libportaudio_dep) $(libopus)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $< -o $@ \
-		$(libspeexdsp) $(libportaudio) -lboost_system -lpthread
+		$(libspeexdsp) $(libportaudio) $(libopus) -lboost_system -lpthread
 
 clean:
 	rm sndlink -fv
