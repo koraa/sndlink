@@ -85,12 +85,11 @@ uint64_t& frameno() {
 uint8_t* frame_payload() {
   return std::data(framebuf) + 8;
 }
-std::atomic<size_t> recv_cnt{0};
+
 void server_recv(udp::socket &sock, udp::endpoint &endp, JitterBuffer &jitbuf, std::mutex &mtx, std::atomic<bool> &started) {
-  sock.async_receive_from(boost::asio::buffer(framebuf), endp, [&](const auto &err, size_t count) {
+  sock.async_receive_from(boost::asio::buffer(framebuf), endp, [&](const auto &err, size_t) {
     if (err && err != boost::asio::error::message_size) return;
     {
-    recv_cnt++;
       std::unique_lock<std::mutex> lck(mtx);
       JitterBufferPacket pkg{reinterpret_cast<char*>(frame_payload()), frame_bytes,
         static_cast<uint32_t>(frameno()*frame_stereo_samples), frame_stereo_samples,
@@ -107,24 +106,16 @@ void server(uint16_t port) {
   std::mutex mtx;
   std::atomic<bool> started{false};
 
-  portaudio player{0, 2, [&](const void*, void *out, size_t count) -> int {
+  portaudio player{0, 2, [&](const void*, void *out, size_t) -> int {
     if (!started) {
       ::memset(out, 0, frame_bytes);
       return ::paContinue;
     }
-    // static size_t cnt{0};
-    // cnt++;
-    // if (cnt % 100 == 0)
-    //   std::cerr << "RECORD: " << cnt << " | " << frameno() << " | " << recv_cnt << "\n";
     std::unique_lock<std::mutex> lck(mtx);
     JitterBufferPacket pkg;
     pkg.data = (char*)out;
     pkg.len = frame_bytes;
-    int r = jitter_buffer_get(jitbuf, &pkg, frame_stereo_samples, nullptr);
-    // std::cout << "jitbuf: " << r << " | ";
-    // for (size_t idx = frame_bytes-32; idx < frame_bytes; idx++)
-    //   std::cout << uint8_t{pkg.data[idx]} << " ";
-    // std::cout << std::endl;
+    jitter_buffer_get(jitbuf, &pkg, frame_stereo_samples, nullptr);
     jitter_buffer_tick(jitbuf);
     return ::paContinue;
   }};
@@ -137,7 +128,6 @@ void server(uint16_t port) {
   io_service.run();
 }
 
-std::atomic<size_t> sent_client{0};
 void client(const char *ip, const char *port) {
   udp::resolver resolver(io_service);
   udp::resolver::query query(ip, port);
@@ -146,14 +136,11 @@ void client(const char *ip, const char *port) {
   udp::socket socket(io_service);
   socket.open(udp::v6());
 
-  portaudio recorder{2, 0, [&](const void *inp, void*, size_t count) -> int {
+  portaudio recorder{2, 0, [&](const void *inp, void*, size_t) -> int {
     frameno()++;
-    // if (frameno() % 100 == 0)
-    //   std::cerr << "RECORD: " << frameno() << " | " << sent_client << "\n";
     ::memcpy(frame_payload(), inp, frame_bytes);
 
     socket.async_send_to(boost::asio::buffer(framebuf), remote_endpoint, [](const boost::system::error_code&, size_t) {
-      sent_client++;
     });
 
     return ::paContinue;

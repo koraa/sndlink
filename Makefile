@@ -1,9 +1,15 @@
 SHELL := /bin/bash
 deps = $(PWD)/deps/
 
-CXXFLAGS+=-g -O0 --std=c++17 -Wall -Wextra -Wpedantic
+CXXFLAGS+=-g --std=c++17 -Wall -Wextra -Wpedantic
 CPPFLAGS+=-I"$(PWD)/deps/include"
 LDFLAGS+=-L"$(PWD)/deps/lib64" -L"$(PWD)/deps/lib"
+
+ifdef DEBUG
+	CXXFLAGS+=-O0
+else
+	CXXFLAGS+=-O3
+endif
 
 # Detect android
 ifneq ($(strip $(shell uname -a | grep Android)),)
