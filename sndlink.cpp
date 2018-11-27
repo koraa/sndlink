@@ -6,6 +6,7 @@
 #include <string_view>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <boost/asio.hpp>
 #include <boost/array.hpp>
 #include <boost/bind.hpp>
@@ -36,6 +37,12 @@ void check(bool ck, Args&&... args) {
   std::cerr << "[FATAL] ";
   (std::cerr << ... << args) << std::endl;
   ::abort();
+}
+
+uint64_t time_ms() {
+  using namespace std::chrono;
+  static auto t0 = high_resolution_clock::now();
+  return duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
 }
 
 template<typename... Args>
@@ -86,7 +93,7 @@ uint8_t* frame_payload() {
   return std::data(framebuf) + 8;
 }
 
-void server_recv(udp::socket &sock, udp::endpoint &endp, JitterBuffer &jitbuf, std::mutex &mtx, std::atomic<bool> &started) {
+void server_recv(udp::socket &sock, udp::endpoint &endp, JitterBuffer &jitbuf, std::mutex &mtx, std::atomic<uint64_t> &last_pkg_time) {
   sock.async_receive_from(boost::asio::buffer(framebuf), endp, [&](const auto &err, size_t) {
     if (err && err != boost::asio::error::message_size) return;
     {
@@ -95,19 +102,19 @@ void server_recv(udp::socket &sock, udp::endpoint &endp, JitterBuffer &jitbuf, s
         static_cast<uint32_t>(frameno()*frame_stereo_samples), frame_stereo_samples,
         static_cast<uint16_t>(frameno()), 0};
       jitter_buffer_put(&jitbuf, &pkg);
-      started = true;
     }
-    server_recv(sock, endp, jitbuf, mtx, started);
+    last_pkg_time = time_ms();
+    server_recv(sock, endp, jitbuf, mtx, last_pkg_time);
   });
 }
 
 void server(uint16_t port) {
   auto *jitbuf = jitter_buffer_init(frame_stereo_samples);
   std::mutex mtx;
-  std::atomic<bool> started{false};
+  std::atomic<uint64_t> last_pkg_time;
 
   portaudio player{0, 2, [&](const void*, void *out, size_t) -> int {
-    if (!started) {
+    if (last_pkg_time == 0 || time_ms() - last_pkg_time > frame_ms*4) {
       ::memset(out, 0, frame_bytes);
       return ::paContinue;
     }
@@ -124,7 +131,7 @@ void server(uint16_t port) {
   socket.set_option(boost::asio::socket_base::reuse_address{true});
   socket.set_option(boost::asio::socket_base::receive_buffer_size(1000000));
   udp::endpoint endpoint;
-  server_recv(socket, endpoint, *jitbuf, mtx, started);
+  server_recv(socket, endpoint, *jitbuf, mtx, last_pkg_time);
   io_service.run();
 }
 
