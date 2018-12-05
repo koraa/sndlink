@@ -28,8 +28,8 @@ namespace sndlink {
 using sample_t = int16_t;
 constexpr size_t samplerate = 48000;
 constexpr size_t channels = 2;
-constexpr size_t frame_ms = 5;
-constexpr size_t frame_stereo_samples = samplerate*frame_ms/1000;
+constexpr size_t frame_us = 2500;
+constexpr size_t frame_stereo_samples = samplerate*frame_us/1000000;
 constexpr size_t frame_mono_samples = frame_stereo_samples * channels;
 constexpr size_t frame_bytes = frame_mono_samples * sizeof(uint16_t);
 
@@ -247,7 +247,7 @@ struct server {
   }
 
   int on_playback(const void*, void *out, size_t) {
-    if (last_pkg_time == 0 || time_ms() - last_pkg_time > frame_ms*4) {
+    if (last_pkg_time == 0 || time_ms() - last_pkg_time > frame_us*8/1000) {
       ::memset(out, 0, frame_bytes);
       return ::paContinue;
     }
@@ -265,7 +265,7 @@ struct server {
 
 void client(const char *ip, const char *port) {
   int err;
-  ::OpusEncoder *enc = opus_encoder_create(samplerate, channels, OPUS_APPLICATION_AUDIO, &err);
+  ::OpusEncoder *enc = opus_encoder_create(samplerate, channels, OPUS_APPLICATION_RESTRICTED_LOWDELAY, &err);
   opus_ck(err, "Error creating opus encoder");
   ::opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(10));
   ::opus_encoder_ctl(enc, OPUS_SET_BITRATE(96000));
