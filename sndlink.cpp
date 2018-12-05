@@ -265,12 +265,14 @@ struct server {
 
 void client(const char *ip, const char *port) {
   int err;
-  ::OpusEncoder *enc = opus_encoder_create(samplerate, channels, OPUS_APPLICATION_RESTRICTED_LOWDELAY, &err);
+  ::OpusEncoder *enc = opus_encoder_create(samplerate, channels, OPUS_APPLICATION_AUDIO, &err);
   opus_ck(err, "Error creating opus encoder");
   ::opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(10));
   ::opus_encoder_ctl(enc, OPUS_SET_BITRATE(96000));
   ::opus_encoder_ctl(enc, OPUS_SET_VBR(1));
   ::opus_encoder_ctl(enc, OPUS_SET_VBR_CONSTRAINT(0));
+  ::opus_encoder_ctl(enc, OPUS_SET_DTX(1));
+  ::opus_encoder_ctl(enc, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
 
   boost::asio::io_service io_service;
   udp::resolver resolver(io_service);
@@ -312,7 +314,9 @@ void client(const char *ip, const char *port) {
       opus.frameno = raw.frameno;
       opus.payload_len = opus_ck(opus_encode(enc, std::data(raw.payload), frame_stereo_samples, std::data(opus.payload), std::size(opus.payload)));
       raw_frames.unmark(raw);
-      opus_frames.unmark(opus);;
+      if (opus.payload_len <= 2) // DTX packets
+        continue;
+      opus_frames.unmark(opus);
 
       socket.async_send_to(boost::asio::buffer(std::data(opus), std::size(opus)), remote_endpoint, [&](const boost::system::error_code&, size_t) {
         opus_frames.mark(opus);
