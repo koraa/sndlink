@@ -1,19 +1,45 @@
 extern crate clap;
 extern crate portaudio;
 extern crate crossbeam;
+extern crate opus;
 
-use std::{io, io::Write, env, thread, result::Result,
-          ptr::copy_nonoverlapping, sync::Arc};
+use std::{io, io::{Write, Read}, env, thread, result::Result,
+          mem::size_of, sync::Arc};
 use clap::{Arg, App, SubCommand};
 use portaudio::PortAudio;
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use crossbeam::queue::ArrayQueue;
 
+// Audio Parameters
+type Sample = i16;
+const SAMPLERATE:    u32   = 48000;
+const CHANNELS:      u32   = 2;
+const FRAME_MS:      u32   = 20;
+const FRAME_SAMPLES: usize = ((FRAME_MS*SAMPLERATE)/1000) as usize;
+const FRAME_LEN:     usize = FRAME_SAMPLES * CHANNELS as usize;
+const FRAME_BYTES:   usize = size_of::<Sample>() * FRAME_LEN;
+type Frame = [Sample; FRAME_LEN];
+
+// Opus Parameters
+const OPUS_BITRATE: opus::Bitrate = opus::Bitrate::Bits(96000);
+const OPUS_VBR:         bool      = true;
+const OPUS_FEC:         bool      = false;
+const OPUS_PACKET_LOSS: i32       = 5; // in percent
+
+fn opus_channels() -> opus::Channels {
+    match CHANNELS {
+        1 => opus::Channels::Mono,
+        2 => opus::Channels::Stereo,
+        _ => panic!("Invalid number `{}` of channels!", CHANNELS)
+    }
+}
+
 #[derive(Debug)]
 enum SndlinkError {
     PortAudio(portaudio::Error),
     Clap(clap::Error),
-    Io(io::Error)
+    Io(io::Error),
+    Opus(opus::Error),
 }
 
 impl From<portaudio::Error> for SndlinkError {
@@ -31,6 +57,12 @@ impl From<clap::Error> for SndlinkError {
 impl From<io::Error> for SndlinkError {
     fn from(err: io::Error) -> SndlinkError {
         SndlinkError::Io(err)
+    }
+}
+
+impl From<opus::Error> for SndlinkError {
+    fn from(err: opus::Error) -> SndlinkError {
+        SndlinkError::Opus(err)
     }
 }
 
@@ -81,7 +113,7 @@ fn main() -> Result<(), SndlinkError> {
 }
 
 fn list_devs() -> Result<(), SndlinkError> {
-    let mut pa = PortAudio::new()?;
+    let pa = PortAudio::new()?;
 
     for dev in pa.devices()? {
         let (portaudio::DeviceIndex(idx), info) = dev?;
@@ -92,68 +124,89 @@ fn list_devs() -> Result<(), SndlinkError> {
 }
 
 fn client() -> Result<(), SndlinkError> {
-    let mut pa = PortAudio::new()?;
+    let pa = PortAudio::new()?;
 
     let def_input = pa.default_input_device()?;
 	let input_info = pa.device_info(def_input)?;
 
-    let settings = portaudio::InputStreamSettings::new(
-        portaudio::StreamParameters::<i16>::new(
-            def_input,
-            2, // channels
-            true, // interleaved
-            input_info.default_low_input_latency),
-        48000.0, // sample rate
-        2400);
+    let mut stream = pa.open_blocking_stream(
+        portaudio::InputStreamSettings::new(
+                portaudio::StreamParameters::<Sample>::new(
+                    def_input,
+                    CHANNELS as i32, // channels
+                    true, // interleaved
+                    input_info.default_low_input_latency),
+                SAMPLERATE as f64, // sample rate
+                FRAME_SAMPLES as u32))?;
 
-    let mut stream = pa.open_blocking_stream(settings)?;
-    stream.start();
+    let mut encoder = opus::Encoder::new(
+        SAMPLERATE as u32,
+        opus_channels(),
+        opus::Application::Voip)?;
+    encoder.set_bitrate(OPUS_BITRATE)?;
+    encoder.set_vbr(OPUS_VBR)?;
+    encoder.set_inband_fec(OPUS_FEC)?;
+    encoder.set_packet_loss_perc(OPUS_PACKET_LOSS)?;
 
+    stream.start()?;
+
+    let mut encoded : [u8; FRAME_BYTES] = [0; FRAME_BYTES];
     loop {
-        for val in stream.read(2400)? {
-            io::stdout().write_i16::<LittleEndian>(*val);
-        }
+        let pcm = stream.read(FRAME_SAMPLES as u32)?;
+        let len = encoder.encode(&pcm, &mut encoded)?;
+        io::stdout().write_i16::<LittleEndian>(len as i16)?;
+        io::stdout().write_all(&encoded[0..len])?;
     }
 }
 
 
 fn server() -> Result<(), SndlinkError> {
-    let mut pa = PortAudio::new()?;
+    let pa = PortAudio::new()?;
 
     let def_output = pa.default_output_device()?;
 	let output_info = pa.device_info(def_output)?;
 
-    let settings = portaudio::OutputStreamSettings::new(
-        portaudio::StreamParameters::<i16>::new(
-            def_output,
-            2, // channels
-            true, // interleaved
-            output_info.default_low_output_latency),
-        48000.0, // sample rate
-        2400);
+    let mut stream = pa.open_blocking_stream(
+        portaudio::OutputStreamSettings::new(
+            portaudio::StreamParameters::<Sample>::new(
+                def_output,
+                CHANNELS as i32, // channels
+                true, // interleaved
+                output_info.default_low_output_latency),
+            SAMPLERATE as f64, // sample rate
+            FRAME_SAMPLES as u32))?;
 
-    let mut stream = pa.open_blocking_stream(settings)?;
-    stream.start();
+    let mut decoder = opus::Decoder::new(
+        SAMPLERATE as u32,
+        opus_channels())?;
 
-    let iq = Arc::new(ArrayQueue::<[i16; 4800]>::new(20));
+    let iq = Arc::new(ArrayQueue::<Frame>::new(20));
     let oq = iq.clone();
 
+    stream.start()?;
+
     thread::spawn(move || -> Result<(), SndlinkError> {
+        let mut encoded : [u8; 10240] = [0; 10240];
+        let mut pcm : Frame = [0; FRAME_LEN];
         loop {
-            let mut buf : [i16; 4800] = [0; 4800];
-            io::stdin().read_i16_into::<LittleEndian>(&mut buf)?;
-            iq.push(buf);
+            let len = io::stdin().read_i16::<LittleEndian>()? as usize;
+            io::stdin().read_exact(&mut encoded[0..len])?;
+            decoder.decode(&encoded[0..len], &mut pcm, OPUS_FEC)?;
+            iq.push(pcm);
         }
     });
 
 
     loop {
-        stream.write(2400, |mut buf| {
+        stream.write(FRAME_SAMPLES as u32, |buf| {
             match oq.pop() {
                 Ok(from) => {
                     buf.copy_from_slice(&from);
                 },
                 _ => {
+                    for mut v in buf {
+                        *v = 0;
+                    }
                 }
             }
         });
