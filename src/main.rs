@@ -3,11 +3,10 @@ extern crate portaudio;
 extern crate crossbeam;
 extern crate opus;
 
-use std::{io, io::{Write, Read}, env, thread, result::Result,
-          mem::size_of, sync::Arc};
+use std::{io, env, thread, result::Result,
+          mem::size_of, sync::Arc, net::UdpSocket};
 use clap::{Arg, App, SubCommand};
 use portaudio::PortAudio;
-use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use crossbeam::queue::ArrayQueue;
 
 // Audio Parameters
@@ -76,15 +75,14 @@ fn main() -> Result<(), SndlinkError> {
             .about("List available audio devices"))
         .subcommand(SubCommand::with_name("client")
             .about("Send audio to a server")
-            .arg(Arg::with_name("SERVER").required(true))
-            .arg(Arg::with_name("PORT").required(true))
+            .arg(Arg::with_name("ADDR").required(true))
             .arg(Arg::with_name("dev")
                 .help("Select the audio device to use")
                 .short("d")
                 .long("dev")))
         .subcommand(SubCommand::with_name("server")
             .about("Receive audio from a server")
-            .arg(Arg::with_name("PORT").required(true))
+            .arg(Arg::with_name("ADDR").required(true))
             .arg(Arg::with_name("dev")
                 .help("Select the audio device to use")
                 .short("d")
@@ -94,18 +92,18 @@ fn main() -> Result<(), SndlinkError> {
         .get_matches_from_safe_borrow(&mut env::args_os())
         .unwrap_or_else( |e| e.exit() );
 
-    match argv.subcommand_name() {
-        Some("list-devs")  => {
+    match argv.subcommand() {
+        ("list-devs", _)  => {
             list_devs()?;
         },
-        Some("client")   => {
-            client()?;
+        ("client", Some(cmdargv))   => {
+            client(cmdargv.value_of("ADDR").unwrap())?;
         },
-        Some("server") => {
-            server()?;
+        ("server", Some(cmdargv)) => {
+            server(cmdargv.value_of("ADDR").unwrap())?;
         },
         _              => {
-            argspec.print_long_help();
+            argspec.print_long_help()?;
         }
     }
 
@@ -123,7 +121,7 @@ fn list_devs() -> Result<(), SndlinkError> {
     Ok(())
 }
 
-fn client() -> Result<(), SndlinkError> {
+fn client(addr: &str) -> Result<(), SndlinkError> {
     let pa = PortAudio::new()?;
 
     let def_input = pa.default_input_device()?;
@@ -148,19 +146,21 @@ fn client() -> Result<(), SndlinkError> {
     encoder.set_inband_fec(OPUS_FEC)?;
     encoder.set_packet_loss_perc(OPUS_PACKET_LOSS)?;
 
+    let socket = UdpSocket::bind("127.0.0.1:42712")?;
+    socket.connect(addr)?;
+
     stream.start()?;
 
     let mut encoded : [u8; FRAME_BYTES] = [0; FRAME_BYTES];
     loop {
         let pcm = stream.read(FRAME_SAMPLES as u32)?;
         let len = encoder.encode(&pcm, &mut encoded)?;
-        io::stdout().write_i16::<LittleEndian>(len as i16)?;
-        io::stdout().write_all(&encoded[0..len])?;
+        socket.send(&encoded[..len])?;
     }
 }
 
 
-fn server() -> Result<(), SndlinkError> {
+fn server(addr: &str) -> Result<(), SndlinkError> {
     let pa = PortAudio::new()?;
 
     let def_output = pa.default_output_device()?;
@@ -180,18 +180,19 @@ fn server() -> Result<(), SndlinkError> {
         SAMPLERATE as u32,
         opus_channels())?;
 
+    let socket = UdpSocket::bind(addr)?;
+
     let iq = Arc::new(ArrayQueue::<Frame>::new(20));
     let oq = iq.clone();
 
     stream.start()?;
 
     thread::spawn(move || -> Result<(), SndlinkError> {
-        let mut encoded : [u8; 10240] = [0; 10240];
+        let mut encoded : [u8; FRAME_BYTES] = [0; FRAME_BYTES];
         let mut pcm : Frame = [0; FRAME_LEN];
         loop {
-            let len = io::stdin().read_i16::<LittleEndian>()? as usize;
-            io::stdin().read_exact(&mut encoded[0..len])?;
-            decoder.decode(&encoded[0..len], &mut pcm, OPUS_FEC)?;
+            let (len, _src) = socket.recv_from(&mut encoded)?;
+            decoder.decode(&encoded[..len], &mut pcm, OPUS_FEC)?;
             iq.push(pcm);
         }
     });
@@ -204,7 +205,7 @@ fn server() -> Result<(), SndlinkError> {
                     buf.copy_from_slice(&from);
                 },
                 _ => {
-                    for mut v in buf {
+                    for v in buf {
                         *v = 0;
                     }
                 }
